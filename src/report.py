@@ -18,6 +18,7 @@ TABLES = {
     "market_monthly": "SELECT * FROM market_monthly ORDER BY country, month",
     "cohort_retention": "SELECT * FROM cohort_retention ORDER BY cohort_month, month_number",
     "product_summary": "SELECT * FROM product_summary ORDER BY sales DESC",
+    "completed_line_quality": "SELECT * FROM completed_line_quality",
     "customer_segments": "SELECT lifecycle_segment, COUNT(*) AS customers, SUM(observed_sales) AS sales FROM customer_360 GROUP BY 1 ORDER BY sales DESC",
 }
 
@@ -29,7 +30,11 @@ def summarize(conn: duckdb.DuckDBPyConnection) -> dict:
     completed = scalar("SELECT COUNT(*) FROM completed_lines")
     invalid = scalar("SELECT COUNT(*) FROM classified_lines WHERE record_status LIKE 'invalid%'")
     cancelled = scalar("SELECT COUNT(*) FROM classified_lines WHERE record_status = 'cancelled'")
-    unknown_customer = scalar("SELECT COUNT(*) FROM completed_lines WHERE customer_id IS NULL")
+    unknown_customer, anonymous_sales, duplicate_lines, duplicate_sales = conn.execute("""
+        SELECT anonymous_lines, anonymous_sales, duplicate_looking_excess_lines,
+               duplicate_looking_sales_exposure
+        FROM completed_line_quality
+    """).fetchone()
     if completed + invalid + cancelled != raw:
         raise ValueError("Line classifications do not cover every source row")
     invoices = scalar("SELECT COUNT(*) FROM orders")
@@ -52,6 +57,11 @@ def summarize(conn: duckdb.DuckDBPyConnection) -> dict:
         "invalid_lines": invalid,
         "missing_customer_id_completed_lines": unknown_customer,
         "missing_customer_id_completed_lines_pct": round(100 * unknown_customer / completed, 2) if completed else None,
+        "missing_customer_id_sales_gbp": float(anonymous_sales),
+        "missing_customer_id_sales_pct": round(100 * float(anonymous_sales) / float(sales), 2) if sales else None,
+        "duplicate_looking_excess_lines": int(duplicate_lines),
+        "duplicate_looking_sales_exposure_gbp": float(duplicate_sales),
+        "duplicate_looking_sales_exposure_pct": round(100 * float(duplicate_sales) / float(sales), 2) if sales else None,
         "completed_orders": invoices,
         "identified_customers": scalar("SELECT COUNT(*) FROM customer_360"),
         "sales_gbp": float(sales),

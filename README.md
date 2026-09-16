@@ -31,10 +31,11 @@ The loader accepts an equivalent `.csv` as well. It refuses to overwrite an exis
 | `orders` | Invoice, customer ID, country | Completed order count and average order value |
 | `customer_360` | Identified customer | First/last purchase, observed sales, lifecycle segment |
 | `customer_repeat_90d` | Identified customer | 90-day repeat with a full follow-up window |
-| `cohort_retention` | First-purchase month × elapsed month | Monthly customer retention, with unobserved months null |
+| `cohort_retention` | First-purchase month × elapsed month | Monthly customer retention; incomplete calendar months are null |
 | `market_summary` | Recorded country | Sales, eligible customers, repeat and known cancellations |
-| `monthly_sales` / `market_monthly` | Month / country × month | Total and market sales trends |
-| `product_summary` | Product | Merchandising view |
+| `monthly_sales` / `market_monthly` | Month / country × month | Sales trends with a full-month flag |
+| `product_summary` | Stock code | Catalog ranking and separately classified non-catalog lines |
+| `completed_line_quality` | Full dataset | Missing-ID sales and identical-looking-line exposure |
 
 The full SQL is in [`sql/model.sql`](sql/model.sql). The pipeline does not remove identical looking line items because repeated order lines may be valid; every source row is retained with a sheet and row number.
 
@@ -43,20 +44,22 @@ The full SQL is in [`sql/model.sql`](sql/model.sql). The pipeline does not remov
 - **Completed sales** = sum of positive quantity × positive price for non-cancellation invoices with required fields. This is gross completed sales, **not profit** or net revenue after matched returns.
 - **Completed order** = one `(invoice_no, customer_id, country)` group. The report reconciles order sales to line sales.
 - **90-day repeat rate** = identified customers with another completed order within 90 days of their first order ÷ identified customers whose first order was at least 90 days before the final observed transaction. The market view calculates this within each country.
-- **Cohort monthly retention** = customers active in elapsed month ÷ customers who first purchased in the cohort month. Months beyond the observed data end are null, not zero.
+- **Cohort monthly retention** = customers active in elapsed month ÷ customers who first purchased in the cohort month. Only fully observed calendar months have a rate; the unfinished final month and future months are null, not zero.
+- **Full-month sales trend** excludes the latest observed calendar month because source coverage may end before that month is complete. The latest month's transactions remain in completed-sales totals and exports with `is_complete_month = false`.
+- **Catalog-product ranking** excludes source codes identified as shipping (`DOT`, `POST`, `C2`), fees/adjustments, gift vouchers, samples and unclassified manual entries. These lines remain in overall completed sales. Classification is a portfolio analysis rule, not a verified product master.
 - **Known cancellation invoice rate** = distinct `C` prefixed invoices ÷ (completed order groups + distinct `C` prefixed invoices). It is an observable proxy because cancellation lines cannot always be matched to original invoices. Negative quantities without a `C` prefix are excluded as invalid, not silently netted.
 - **Customer value** = observed completed sales over the dataset period. It is not a forecast of lifetime value.
 - **High-value at risk** = observed sales in the top quartile and at least 90 days since last purchase at the dataset cutoff. This is a descriptive rule, not a validated churn prediction.
 
-Lines without a customer ID contribute to sales and product totals but cannot enter customer or cohort metrics. Line statuses and missing ID counts are shown in the dashboard and `reports/summary.json`.
+Lines without a customer ID contribute to sales and product totals but cannot enter customer or cohort metrics. The dashboard and `reports/summary.json` show both their line count and sales amount. Identical-looking source lines are retained and reported as an exposure, not assumed to be errors or removed.
 
 ## Dashboard
 
-The four pages cover completed sales, RFM-based customer lifecycle segments, a market opportunity matrix, and product/data quality. The market scatter compares sales with 90-day repeat rate and lets you set a minimum eligible-customer count; a separate chart shows each market's monthly sales history. It avoids a weighted opportunity score whose weights cannot be validated from this data alone.
+The four pages cover completed sales, rule-based customer lifecycle segments, a market opportunity matrix, and product/data quality. Monthly charts show complete months and label the omitted partial month. The market scatter compares sales with 90-day repeat rate, lets you set a minimum eligible-customer count, and excludes the UK by default to keep smaller markets readable; the UK can be included with one control. It avoids a weighted opportunity score whose weights cannot be validated from this data alone.
 
 ## Quality controls
 
-`src.report` checks that completed line sales reconcile to completed order sales. Tests cover source schema normalization, missing customer IDs, cancellation and invalid-row classification, observation-window censoring, cohort behaviour, and market repeat denominators. GitHub Actions runs tests on every push and pull request using a small synthetic fixture; the full UCI workbook is not needed in CI.
+`src.report` checks that completed line sales reconcile to completed order sales. Tests cover source schema normalization, missing customer IDs, cancellation and invalid-row classification, partial-month censoring, product classification, duplicate-looking-line disclosure and market repeat denominators. GitHub Actions runs tests on every push and pull request using small synthetic fixtures; the full UCI workbook is not needed in CI.
 
 ## Source and limitations
 

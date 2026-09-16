@@ -93,11 +93,11 @@ WITH firsts AS (
 )
 SELECT m.cohort_month, m.month_number, s.cohort_size,
        CASE WHEN DATE_TRUNC('month', (SELECT MAX(invoice_at) FROM raw_lines))
-                      < m.cohort_month + m.month_number * INTERVAL 1 MONTH
+                      < m.cohort_month + (m.month_number + 1) * INTERVAL 1 MONTH
             THEN NULL
             ELSE COUNT(DISTINCT a.customer_id) END AS active_customers,
        CASE WHEN DATE_TRUNC('month', (SELECT MAX(invoice_at) FROM raw_lines))
-                      < m.cohort_month + m.month_number * INTERVAL 1 MONTH
+                      < m.cohort_month + (m.month_number + 1) * INTERVAL 1 MONTH
             THEN NULL
             ELSE ROUND(COUNT(DISTINCT a.customer_id) * 100.0 / s.cohort_size, 2)
        END AS retention_pct
@@ -151,16 +151,47 @@ LEFT JOIN cancels c USING (country);
 
 CREATE OR REPLACE VIEW monthly_sales AS
 SELECT DATE_TRUNC('month', order_at) AS month, COUNT(*) AS orders,
-       CAST(SUM(order_sales) AS DECIMAL(18, 2)) AS sales
+       CAST(SUM(order_sales) AS DECIMAL(18, 2)) AS sales,
+       DATE_TRUNC('month', order_at) < DATE_TRUNC('month', (SELECT MAX(invoice_at) FROM raw_lines))
+           AS is_complete_month
 FROM orders GROUP BY 1;
 
 CREATE OR REPLACE VIEW market_monthly AS
 SELECT country, DATE_TRUNC('month', order_at) AS month, COUNT(*) AS orders,
-       CAST(SUM(order_sales) AS DECIMAL(18, 2)) AS sales
+       CAST(SUM(order_sales) AS DECIMAL(18, 2)) AS sales,
+       DATE_TRUNC('month', order_at) < DATE_TRUNC('month', (SELECT MAX(invoice_at) FROM raw_lines))
+           AS is_complete_month
 FROM orders GROUP BY country, month;
 
 CREATE OR REPLACE VIEW product_summary AS
 SELECT stock_code, ARG_MAX(description, invoice_at) AS description,
+       CASE
+           WHEN UPPER(stock_code) IN ('DOT', 'POST', 'C2') THEN 'Shipping'
+           WHEN UPPER(stock_code) IN ('AMAZONFEE', 'BANK CHARGES', 'B', 'ADJUST', 'ADJUST2', 'D')
+               THEN 'Fees and adjustments'
+           WHEN UPPER(stock_code) = 'M' THEN 'Manual / unclassified'
+           WHEN starts_with(LOWER(stock_code), 'gift_') THEN 'Gift voucher'
+           WHEN UPPER(stock_code) = 'S' THEN 'Samples'
+           ELSE 'Catalog product'
+       END AS product_category,
        COUNT(DISTINCT invoice_no) AS orders, SUM(quantity) AS units,
        CAST(SUM(line_sales) AS DECIMAL(18, 2)) AS sales
 FROM completed_lines GROUP BY stock_code;
+
+-- Identical-looking lines are measured, not removed: the source has no
+-- line-level business key proving they are erroneous duplicates.
+CREATE OR REPLACE VIEW completed_line_quality AS
+WITH duplicate_groups AS (
+    SELECT COUNT(*) AS copies, MIN(line_sales) AS line_sales
+    FROM completed_lines
+    GROUP BY invoice_no, stock_code, description, quantity, invoice_at,
+             unit_price, customer_id, country
+)
+SELECT
+    (SELECT COUNT(*) FROM completed_lines WHERE customer_id IS NULL) AS anonymous_lines,
+    (SELECT COALESCE(SUM(line_sales), 0) FROM completed_lines WHERE customer_id IS NULL)
+        AS anonymous_sales,
+    (SELECT COALESCE(SUM(copies - 1), 0) FROM duplicate_groups WHERE copies > 1)
+        AS duplicate_looking_excess_lines,
+    (SELECT COALESCE(SUM((copies - 1) * line_sales), 0) FROM duplicate_groups WHERE copies > 1)
+        AS duplicate_looking_sales_exposure;
